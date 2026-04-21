@@ -1,0 +1,379 @@
+<!doctype html>
+<html lang="zh-TW">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>GUMMY GENERATION - Pure White Clouds</title>
+    <style>
+      body {
+        margin: 0;
+        overflow: hidden;
+        background: #000;
+      }
+      canvas {
+        display: block;
+      }
+      #loading-overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: #ffffff;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        z-index: 100;
+        font-family: "Microsoft JhengHei", sans-serif;
+        transition: opacity 0.5s ease;
+      }
+      #loading-text {
+        color: #ff4081;
+        font-weight: bold;
+        font-size: 1.2rem;
+        margin-bottom: 15px;
+        letter-spacing: 2px;
+      }
+      #progress-container {
+        width: 200px;
+        height: 6px;
+        background: #fce4ec;
+        border-radius: 10px;
+        overflow: hidden;
+      }
+      #progress-bar {
+        width: 0%;
+        height: 100%;
+        background: #ff4081;
+        transition: width 0.3s ease;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="loading-overlay">
+      <div id="loading-text">快樂糖準備中...</div>
+      <div id="progress-container"><div id="progress-bar"></div></div>
+    </div>
+
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+          "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/",
+          "cannon-es": "https://cdn.jsdelivr.net/npm/cannon-es@0.20.0/dist/cannon-es.js"
+        }
+      }
+    </script>
+
+    <script type="module">
+      import * as THREE from "three";
+      import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+      import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
+      import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
+      import { BokehPass } from "three/addons/postprocessing/BokehPass.js";
+      import { ShaderPass } from "three/addons/postprocessing/ShaderPass.js";
+      import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
+      import * as CANNON from "cannon-es";
+
+      let scene, camera, renderer, world, composer, noisePass, bloomPass;
+      let gummies = [];
+      let clouds = [];
+      let lastTime = performance.now();
+
+      const modelList = [
+        "Airfare.glb",
+        "Album.glb",
+        "Beauty.glb",
+        "Beyblade.glb",
+        "Bottle.glb",
+        "Camera.glb",
+        "Champagne.glb",
+        "Charm_1.glb",
+        "Charm_2.glb",
+        "Cloth_Dress.glb",
+        "Cloth_Jeans.glb",
+        "GamePoint.glb",
+        "Gift.glb",
+        "Kobo.glb",
+        "LightStick.glb",
+        "Manga.glb",
+        "Material.glb",
+        "Model_1.glb",
+        "Model_2.glb",
+        "Model_3.glb",
+        "Model_4.glb",
+        "Mouse.glb",
+        "Perfume.glb",
+        "PhoneCase.glb",
+        "Tarot.glb",
+      ];
+
+      const cameraZ = 20;
+
+      init();
+
+      function init() {
+        renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.toneMappingExposure = 1.0; // 💡 降低全局曝光，增加穩定度
+        document.body.appendChild(renderer.domElement);
+
+        world = new CANNON.World();
+        world.gravity.set(0, 0, 0);
+        scene = new THREE.Scene();
+
+        camera = new THREE.PerspectiveCamera(
+          35,
+          window.innerWidth / window.innerHeight,
+          0.1,
+          1000,
+        );
+        camera.position.z = cameraZ;
+
+        // 背景球
+        const sphereGeo = new THREE.SphereGeometry(100, 32, 32);
+        const sphereMat = new THREE.ShaderMaterial({
+          side: THREE.BackSide,
+          uniforms: {
+            topColor: { value: new THREE.Color(0xb3e5fc) },
+            bottomColor: { value: new THREE.Color(0xfce4ec) },
+            offset: { value: 33 },
+            exponent: { value: 0.6 },
+          },
+          vertexShader: `varying vec3 vWorldPosition; void main() { vec4 worldPosition = modelMatrix * vec4( position, 1.0 ); vWorldPosition = worldPosition.xyz; gl_Position = projectionMatrix * modelViewMatrix * vec4( position, 1.0 ); }`,
+          fragmentShader: `uniform vec3 topColor; uniform vec3 bottomColor; uniform float offset; uniform float exponent; varying vec3 vWorldPosition; void main() { float h = normalize( vWorldPosition + offset ).y; gl_FragColor = vec4( mix( bottomColor, topColor, max( pow( max( h, 0.0 ), exponent ), 0.0 ) ), 1.0 ); }`,
+        });
+        scene.add(new THREE.Mesh(sphereGeo, sphereMat));
+
+        createPureClouds(); // 💡 換成新的純白雲朵邏輯
+
+        scene.add(new THREE.AmbientLight(0xffffff, 2.0));
+        const p1 = new THREE.DirectionalLight(0xffffff, 1.5);
+        p1.position.set(10, 20, 10);
+        scene.add(p1);
+
+        composer = new EffectComposer(renderer);
+        composer.addPass(new RenderPass(scene, camera));
+
+        // 💡 關鍵：提高門檻，絕對不讓雲朵發光
+        bloomPass = new UnrealBloomPass(
+          new THREE.Vector2(window.innerWidth, window.innerHeight),
+          0.5,
+          0.4,
+          0.98,
+        );
+        bloomPass.threshold = 0.98; // 💡 只有最強的高光會發光
+        bloomPass.strength = 0.6;
+        bloomPass.radius = 0.4;
+        composer.addPass(bloomPass);
+
+        const bokehPass = new BokehPass(scene, camera, {
+          focus: 7.0,
+          aperture: 0.0001,
+          maxblur: 0.008,
+          width: window.innerWidth,
+          height: window.innerHeight,
+        });
+        composer.addPass(bokehPass);
+
+        const noiseShader = {
+          uniforms: {
+            tDiffuse: { value: null },
+            uTime: { value: 0.0 },
+            uAmount: { value: 0.06 },
+          },
+          vertexShader: `varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4( position, 1.0 ); }`,
+          fragmentShader: `
+                    uniform sampler2D tDiffuse; uniform float uTime; uniform float uAmount; varying vec2 vUv;
+                    float random(vec2 p) { return fract(sin(dot(p + uTime, vec2(12.9898, 78.233))) * 43758.5453); }
+                    void main() { vec4 color = texture2D(tDiffuse, vUv); float n = random(vUv) * uAmount; color.rgb += n - (uAmount * 0.5); gl_FragColor = color; }
+                `,
+        };
+        noisePass = new ShaderPass(noiseShader);
+        composer.addPass(noisePass);
+
+        const progressBar = document.getElementById("progress-bar");
+        const manager = new THREE.LoadingManager();
+        manager.onProgress = (url, itemsLoaded, itemsTotal) => {
+          progressBar.style.width = (itemsLoaded / itemsTotal) * 100 + "%";
+        };
+        manager.onLoad = () => {
+          document.getElementById("loading-overlay").style.opacity = "0";
+          setTimeout(() => {
+            document.getElementById("loading-overlay").style.display = "none";
+            animate();
+          }, 500);
+        };
+
+        const loader = new GLTFLoader(manager);
+        modelList.forEach((name) => {
+          loader.load(name, (gltf) => {
+            const master = gltf.scene;
+            master.traverse((child) => {
+              if (child.isMesh) {
+                child.material.transparent = true;
+                child.material.opacity = 0.7;
+                child.material.color.multiplyScalar(2.0);
+                child.material.roughness = 0.05;
+                child.material.metalness = 0.3;
+                child.material.emissive = child.material.color;
+                child.material.emissiveIntensity = 0.15;
+                child.material.side = THREE.DoubleSide;
+              }
+            });
+
+            const copies = 4;
+            for (let i = 0; i < copies; i++) {
+              const mesh = master.clone();
+              const s = 45 + Math.random() * 20;
+              mesh.scale.set(s, s, s);
+              const zPos = (Math.random() - 0.5) * 24;
+              const body = new CANNON.Body({
+                mass: 1,
+                shape: new CANNON.Sphere(s * 0.22),
+                linearDamping: 0.9,
+                angularDamping: 0.9,
+              });
+              resetMesh(mesh, body, zPos, true);
+              scene.add(mesh);
+              world.addBody(body);
+              gummies.push({
+                mesh,
+                body,
+                fallSpeed: 0.005 + Math.random() * 0.01,
+                rotSpeed: {
+                  x: (Math.random() - 0.5) * 0.006,
+                  y: (Math.random() - 0.5) * 0.01,
+                  z: (Math.random() - 0.5) * 0.005,
+                },
+              });
+            }
+          });
+        });
+
+        window.addEventListener("resize", onWindowResize);
+      }
+
+      function createPureClouds() {
+        const canvas = document.createElement("canvas");
+        canvas.width = 512;
+        canvas.height = 512;
+        const ctx = canvas.getContext("2d");
+        ctx.fillStyle = "rgba(255, 255, 255, 0)";
+        ctx.fillRect(0, 0, 512, 512);
+
+        // 💡 修正：不再使用淺紫色陰影，改用極淡的「冷白」
+        const gradient = ctx.createRadialGradient(256, 256, 0, 256, 256, 180);
+        gradient.addColorStop(0, "rgba(255, 255, 255, 1.0)");
+        gradient.addColorStop(0.8, "rgba(245, 250, 255, 0.6)"); // 💡 讓雲的邊緣極淡地偏藍，與天空融合
+        gradient.addColorStop(1, "rgba(255, 255, 255, 0)");
+        ctx.fillStyle = gradient;
+        ctx.fill();
+
+        const clusters = [
+          { x: 150, y: 250, r: 120 },
+          { x: 350, y: 250, r: 130 },
+          { x: 250, y: 150, r: 140 },
+        ];
+        clusters.forEach((c) => {
+          ctx.beginPath();
+          ctx.arc(c.x, c.y, c.r, 0, Math.PI * 2);
+          const g = ctx.createRadialGradient(c.x, c.y, 0, c.x, c.y, c.r);
+          g.addColorStop(0, "rgba(255, 255, 255, 0.95)");
+          g.addColorStop(1, "rgba(255, 255, 255, 0)");
+          ctx.fillStyle = g;
+          ctx.fill();
+        });
+
+        const cloudTexture = new THREE.CanvasTexture(canvas);
+
+        for (let i = 0; i < 45; i++) {
+          // 💡 💡 關鍵：將自發光設為 0，改用 MeshBasicMaterial 💡 💡
+          // BasicMaterial 不受光照影響，能維持我們設計的顏色，且不會「燒起來」
+          const mat = new THREE.MeshBasicMaterial({
+            map: cloudTexture,
+            transparent: true,
+            opacity: 0.3 + Math.random() * 0.3, // 💡 適中的透明度
+            depthWrite: false,
+            side: THREE.DoubleSide,
+          });
+
+          const cloudScale = 25 + Math.random() * 30;
+          const geo = new THREE.PlaneGeometry(cloudScale, cloudScale * 0.6);
+          const mesh = new THREE.Mesh(geo, mat);
+
+          mesh.position.set(
+            (Math.random() - 0.5) * 120,
+            (Math.random() - 0.5) * 70,
+            -45 + Math.random() * 20,
+          );
+          scene.add(mesh);
+          clouds.push({ mesh, driftSpeed: 0.002 + Math.random() * 0.006 });
+        }
+      }
+
+      function resetMesh(mesh, body, zCoord, isFirstSpawn = false) {
+        const distanceToCamera = Math.abs(zCoord - cameraZ);
+        const angleInRad = (camera.fov / 2) * (Math.PI / 180);
+        const planeHeightAtZ = 2 * distanceToCamera * Math.tan(angleInRad);
+        const calculatedBoundaryY = planeHeightAtZ / 2 + 10;
+        const startX =
+          (Math.random() - 0.5) *
+          (planeHeightAtZ * (window.innerWidth / window.innerHeight) * 1.5);
+        let finalY = calculatedBoundaryY;
+        if (isFirstSpawn)
+          finalY = (Math.random() - 0.5) * (calculatedBoundaryY * 3.5);
+        mesh.position.set(startX, finalY, zCoord);
+        body.position.set(startX, finalY, zCoord);
+        body.velocity.set(0, 0, 0);
+        mesh.rotation.set(
+          Math.random() * Math.PI,
+          Math.random() * Math.PI,
+          Math.random() * Math.PI,
+        );
+        mesh.killYAtZ = -calculatedBoundaryY;
+      }
+
+      function animate(time) {
+        requestAnimationFrame(animate);
+        const deltaTime = (time - lastTime) / 1000;
+        lastTime = time;
+        world.step(1 / 60, deltaTime, 3);
+        if (noisePass) noisePass.uniforms["uTime"].value = time / 1000;
+
+        clouds.forEach((cloud) => {
+          cloud.mesh.position.x += cloud.driftSpeed;
+          if (cloud.mesh.position.x > 80) cloud.mesh.position.x = -80;
+        });
+
+        gummies.forEach((obj) => {
+          obj.body.position.y -= obj.fallSpeed;
+          obj.mesh.rotation.x += obj.rotSpeed.x;
+          obj.mesh.rotation.y += obj.rotSpeed.y;
+          obj.mesh.rotation.z += obj.rotSpeed.z;
+          obj.mesh.position.lerp(
+            new THREE.Vector3(
+              obj.body.position.x,
+              obj.body.position.y,
+              obj.body.position.z,
+            ),
+            0.2,
+          );
+          if (obj.mesh.position.y < obj.mesh.killYAtZ)
+            resetMesh(obj.mesh, obj.body, obj.mesh.position.z);
+        });
+        composer.render();
+      }
+
+      function onWindowResize() {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        composer.setSize(window.innerWidth, window.innerHeight);
+      }
+    </script>
+  </body>
+</html>
